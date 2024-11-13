@@ -77,9 +77,16 @@ type GenerateRequest struct {
 	// request, for multimodal models.
 	Images []ImageData `json:"images,omitempty"`
 
+	LoraAdapters []LoraAdapter `json:"lora_adapters,omitempty"`
+
 	// Options lists model-specific options. For example, temperature can be
 	// set through this field, if the model supports it.
 	Options map[string]interface{} `json:"options"`
+}
+
+type LoraAdapter struct {
+	Id    int     `json:"id"`
+	Scale float32 `json:"scale"`
 }
 
 // ChatRequest describes a request sent by [Client.Chat].
@@ -102,6 +109,8 @@ type ChatRequest struct {
 
 	// Tools is an optional list of tools the model has access to.
 	Tools `json:"tools,omitempty"`
+
+	LoraAdapters []LoraAdapter `json:"lora_adapters,omitempty"`
 
 	// Options lists model-specific options.
 	Options map[string]interface{} `json:"options"`

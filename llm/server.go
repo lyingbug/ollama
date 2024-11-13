@@ -144,9 +144,9 @@ func NewLlamaServer(gpus discover.GpuInfoList, model string, ggml *GGML, adapter
 	// Loop through potential servers
 	finalErr := errors.New("no suitable llama servers found")
 
-	if len(adapters) > 1 {
-		return nil, errors.New("ollama supports only one lora adapter, but multiple were provided")
-	}
+	//if len(adapters) > 1 {
+	//	return nil, errors.New("ollama supports only one lora adapter, but multiple were provided")
+	//}
 
 	rDir, err := runners.Refresh(build.EmbedFS)
 	if err != nil {
@@ -200,9 +200,12 @@ func NewLlamaServer(gpus discover.GpuInfoList, model string, ggml *GGML, adapter
 		params = append(params, "--main-gpu", strconv.Itoa(opts.MainGPU))
 	}
 
-	if len(adapters) > 0 {
-		// TODO: applying multiple adapters is not supported by the llama.cpp server yet
-		params = append(params, "--lora", adapters[0])
+	//if len(adapters) > 0 {
+	//	// TODO: applying multiple adapters is not supported by the llama.cpp server yet
+	//	params = append(params, "--lora", adapters[0])
+	//}
+	for _, adapter := range adapters {
+		params = append(params, "--lora", adapter)
 	}
 
 	if len(projectors) > 0 {
@@ -669,10 +672,11 @@ type completion struct {
 }
 
 type CompletionRequest struct {
-	Prompt  string
-	Format  string
-	Images  []ImageData
-	Options *api.Options
+	Prompt       string
+	Format       string
+	Images       []ImageData
+	Options      *api.Options
+	LoraAdapters []api.LoraAdapter
 }
 
 type CompletionResponse struct {
@@ -721,6 +725,7 @@ func (s *llmServer) Completion(ctx context.Context, req CompletionRequest, fn fu
 		"stop":              req.Options.Stop,
 		"image_data":        req.Images,
 		"cache_prompt":      true,
+		"lora_adapters":     req.LoraAdapters,
 	}
 
 	// Make sure the server is ready
@@ -747,6 +752,7 @@ func (s *llmServer) Completion(ctx context.Context, req CompletionRequest, fn fu
 		return fmt.Errorf("failed to marshal data: %v", err)
 	}
 
+	slog.Info("completion", "body", buffer.String())
 	endpoint := fmt.Sprintf("http://127.0.0.1:%d/completion", s.port)
 	serverReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, buffer)
 	if err != nil {

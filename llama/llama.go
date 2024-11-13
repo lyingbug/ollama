@@ -296,13 +296,13 @@ func (m *Model) AddBOSToken() bool {
 	return bool(C.llama_add_bos_token(m.c))
 }
 
-func (m *Model) ApplyLoraFromFile(context *Context, loraPath string, scale float32, threads int) error {
+func (m *Model) ApplyLoraFromFile(context *Context, loraPath string, scale float32, threads int) (*CommonLoraAdapterContainer, error) {
 	cLoraPath := C.CString(loraPath)
 	defer C.free(unsafe.Pointer(cLoraPath))
 
 	loraAdapter := C.llama_lora_adapter_init(m.c, cLoraPath)
 	if loraAdapter == nil {
-		return errors.New("unable to load lora")
+		return nil, errors.New("unable to load lora")
 	}
 
 	err := -1
@@ -310,10 +310,35 @@ func (m *Model) ApplyLoraFromFile(context *Context, loraPath string, scale float
 		err = int(C.llama_lora_adapter_set(context.c, loraAdapter, C.float(scale)))
 	}
 	if err != 0 {
-		return errors.New("error applying lora from file")
+		return nil, errors.New("error applying lora from file")
 	}
 
+	adapter := &CommonLoraAdapterContainer{
+		Path:    loraPath,
+		Scale:   scale,
+		Adapter: loraAdapter,
+	}
+	return adapter, nil
+}
+
+func (m *Model) SetLoraAdapters(context *Context, adapters []*CommonLoraAdapterContainer) error {
+	C.llama_lora_adapter_clear(context.c)
+	for _, adapter := range adapters {
+		if adapter.Scale != 0.0 {
+			err := int(C.llama_lora_adapter_set(context.c, adapter.Adapter, C.float(adapter.Scale)))
+			if err != 0 {
+				return errors.New("error applying lora from file")
+			}
+		}
+	}
 	return nil
+}
+
+type CommonLoraAdapterContainer struct {
+	Id      int                          `json:"id"`
+	Path    string                       `json:"path"`
+	Scale   float32                      `json:"scale"`
+	Adapter *C.struct_llama_lora_adapter `json:"-"`
 }
 
 type Batch struct {
@@ -397,7 +422,8 @@ func (b *Batch) Free() {
 }
 
 type Model struct {
-	c *C.struct_llama_model
+	c                *C.struct_llama_model
+	adapterContainer []*CommonLoraAdapterContainer
 }
 
 func (m *Model) TokenToPiece(token int) string {

@@ -202,6 +202,12 @@ func (s *Server) inputs(prompt string, images []ImageData) ([]input, error) {
 	return inputs, nil
 }
 
+type adapterInfo struct {
+	Id    int     `json:"id"`
+	Path  string  `json:"path"`
+	Scale float32 `json:"scale"`
+}
+
 type Server struct {
 	model *llama.Model
 	lc    *llama.Context
@@ -235,6 +241,8 @@ type Server struct {
 	progress float32
 
 	status ServerStatus
+
+	adapters []*llama.CommonLoraAdapterContainer
 }
 
 func (s *Server) allNil() bool {
@@ -530,11 +538,17 @@ type ImageData struct {
 	AspectRatioID int    `json:"aspect_ratio_id"`
 }
 
+type LoraAdapter struct {
+	Id    int     `json:"id"`
+	Scale float32 `json:"scale"`
+}
+
 type CompletionRequest struct {
-	Prompt      string      `json:"prompt"`
-	Images      []ImageData `json:"image_data"`
-	Grammar     string      `json:"grammar"`
-	CachePrompt bool        `json:"cache_prompt"`
+	Prompt       string        `json:"prompt"`
+	Images       []ImageData   `json:"image_data"`
+	Grammar      string        `json:"grammar"`
+	CachePrompt  bool          `json:"cache_prompt"`
+	LoraAdapters []LoraAdapter `json:"lora_adapters"`
 
 	Options
 }
@@ -567,6 +581,26 @@ func (s *Server) completion(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Bad request", http.StatusBadRequest)
 		return
+	}
+
+	adapterChanged := false
+	for _, adapter := range req.LoraAdapters {
+		if adapter.Id > len(s.adapters)-1 || adapter.Id < 0 {
+			continue
+		}
+		if s.adapters[adapter.Id].Scale != adapter.Scale {
+			s.adapters[adapter.Id].Scale = adapter.Scale
+			adapterChanged = true
+		}
+	}
+	if adapterChanged {
+		err := s.model.SetLoraAdapters(s.lc, s.adapters)
+		if err != nil {
+			slog.Error("set lora adapters", "error", err.Error())
+		} else {
+			req.CachePrompt = false
+			slog.Info("set lora adapter", "detail", s.adapters, "cache_prompt", false)
+		}
 	}
 
 	// Set the headers to indicate streaming
@@ -753,10 +787,39 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *Server) loraAdapters(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(s.adapters); err != nil {
+		http.Error(w, fmt.Sprintf("failed to encode response: %v", err), http.StatusInternalServerError)
+	}
+}
+
+func (s *Server) setLoraAdapters(w http.ResponseWriter, r *http.Request) {
+	var req []*llama.CommonLoraAdapterContainer
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("bad request: %s", err), http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	for _, adapter := range req {
+		if adapter.Id > len(s.adapters)-1 || adapter.Id < 0 {
+			continue
+		}
+		s.adapters[adapter.Id].Scale = adapter.Scale
+	}
+	err := s.model.SetLoraAdapters(s.lc, s.adapters)
+	if err != nil {
+		slog.Error("set lora adapter", "error", err.Error())
+	}
+	if err = json.NewEncoder(w).Encode(s.adapters); err != nil {
+		http.Error(w, fmt.Sprintf("failed to encode response: %v", err), http.StatusInternalServerError)
+	}
+}
+
 func (s *Server) loadModel(
 	params llama.ModelParams,
 	mpath string,
-	lpath string,
+	lpaths []string,
 	ppath string,
 	kvSize int,
 	flashAttention bool,
@@ -777,12 +840,18 @@ func (s *Server) loadModel(
 		panic(err)
 	}
 
-	if lpath != "" {
-		err := s.model.ApplyLoraFromFile(s.lc, lpath, 1.0, threads)
+	var adapters []*llama.CommonLoraAdapterContainer
+	for i, lpath := range lpaths {
+		var adapter *llama.CommonLoraAdapterContainer
+		adapter, err = s.model.ApplyLoraFromFile(s.lc, lpath, 1.0, threads)
 		if err != nil {
 			panic(err)
 		}
+		adapter.Id = i
+		adapters = append(adapters, adapter)
+		slog.Info("add lora", "path", lpath, "scale", 1.0)
 	}
+	s.adapters = adapters
 
 	if ppath != "" {
 		var err error
@@ -801,7 +870,19 @@ func (s *Server) loadModel(
 	s.ready.Done()
 }
 
+type stringSlice []string
+
+func (s *stringSlice) String() string {
+	return fmt.Sprintf("%v", *s)
+}
+
+func (s *stringSlice) Set(value string) error {
+	*s = append(*s, value)
+	return nil
+}
+
 func main() {
+	var lPaths stringSlice
 	mpath := flag.String("model", "", "Path to model binary file")
 	ppath := flag.String("mmproj", "", "Path to projector binary file")
 	parallel := flag.Int("parallel", 1, "Number of sequences to handle simultaneously")
@@ -810,7 +891,7 @@ func main() {
 	mainGpu := flag.Int("main-gpu", 0, "Main GPU")
 	flashAttention := flag.Bool("flash-attn", false, "Enable flash attention")
 	kvSize := flag.Int("ctx-size", 2048, "Context (or KV cache) size")
-	lpath := flag.String("lora", "", "Path to lora layer file")
+	flag.Var(&lPaths, "lora", "Path to lora layer file")
 	port := flag.Int("port", 8080, "Port to expose the server on")
 	threads := flag.Int("threads", runtime.NumCPU(), "Number of threads to use during generation")
 	verbose := flag.Bool("verbose", false, "verbose output (default: disabled)")
@@ -865,7 +946,7 @@ func main() {
 	params := llama.ModelParams{
 		NumGpuLayers: *nGpuLayers,
 		MainGpu:      *mainGpu,
-		UseMmap:      !*noMmap && *lpath == "",
+		UseMmap:      !*noMmap && len(lPaths) == 0,
 		UseMlock:     *mlock,
 		TensorSplit:  tensorSplitFloats,
 		Progress: func(progress float32) {
@@ -874,7 +955,7 @@ func main() {
 	}
 
 	server.ready.Add(1)
-	go server.loadModel(params, *mpath, *lpath, *ppath, *kvSize, *flashAttention, *threads, *multiUserCache)
+	go server.loadModel(params, *mpath, lPaths, *ppath, *kvSize, *flashAttention, *threads, *multiUserCache)
 
 	server.cond = sync.NewCond(&server.mu)
 
@@ -893,6 +974,8 @@ func main() {
 	mux.HandleFunc("/embedding", server.embeddings)
 	mux.HandleFunc("/completion", server.completion)
 	mux.HandleFunc("/health", server.health)
+	mux.HandleFunc("/lora-adapters", server.loraAdapters)
+	mux.HandleFunc("/set-lora-adapters", server.setLoraAdapters)
 
 	httpServer := http.Server{
 		Handler: mux,
