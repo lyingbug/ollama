@@ -801,17 +801,24 @@ func (s *Server) loraAdapters(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) setLoraAdapters(w http.ResponseWriter, r *http.Request) {
-	var req []*llama.CommonLoraAdapterContainer
+	var req []api.LoraAdapter
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, fmt.Sprintf("bad request: %s", err), http.StatusBadRequest)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	for _, adapter := range req {
-		if adapter.Id > len(s.adapters)-1 || adapter.Id < 0 {
+		if adapter.Name == "" {
 			continue
 		}
-		s.adapters[adapter.Id].Scale = adapter.Scale
+		for i, loraAdapter := range s.adapters {
+			if strings.Index(filepath.Base(loraAdapter.Path), adapter.Name) != -1 {
+				if loraAdapter.Scale != adapter.Scale {
+					s.adapters[i].Scale = adapter.Scale
+				}
+				break
+			}
+		}
 	}
 	err := s.model.SetLoraAdapters(s.lc, s.adapters)
 	if err != nil {
