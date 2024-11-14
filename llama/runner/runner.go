@@ -540,6 +540,7 @@ type ImageData struct {
 
 type LoraAdapter struct {
 	Id    int     `json:"id"`
+	Name  string  `json:"name"`
 	Scale float32 `json:"scale"`
 }
 
@@ -585,12 +586,17 @@ func (s *Server) completion(w http.ResponseWriter, r *http.Request) {
 
 	adapterChanged := false
 	for _, adapter := range req.LoraAdapters {
-		if adapter.Id > len(s.adapters)-1 || adapter.Id < 0 {
+		if adapter.Name == "" {
 			continue
 		}
-		if s.adapters[adapter.Id].Scale != adapter.Scale {
-			s.adapters[adapter.Id].Scale = adapter.Scale
-			adapterChanged = true
+		for i, loraAdapter := range s.adapters {
+			if strings.Index(filepath.Base(loraAdapter.Path), adapter.Name) != -1 {
+				if loraAdapter.Scale != adapter.Scale {
+					s.adapters[i].Scale = adapter.Scale
+					adapterChanged = true
+				}
+				break
+			}
 		}
 	}
 	if adapterChanged {
@@ -841,13 +847,12 @@ func (s *Server) loadModel(
 	}
 
 	var adapters []*llama.CommonLoraAdapterContainer
-	for i, lpath := range lpaths {
+	for _, lpath := range lpaths {
 		var adapter *llama.CommonLoraAdapterContainer
 		adapter, err = s.model.ApplyLoraFromFile(s.lc, lpath, 1.0, threads)
 		if err != nil {
 			panic(err)
 		}
-		adapter.Id = i
 		adapters = append(adapters, adapter)
 		slog.Info("add lora", "path", lpath, "scale", 1.0)
 	}

@@ -337,7 +337,6 @@ func (m *Model) SetLoraAdapters(context *Context, adapters []*CommonLoraAdapterC
 }
 
 type CommonLoraAdapterContainer struct {
-	Id      int                          `json:"id"`
 	Path    string                       `json:"path"`
 	Scale   float32                      `json:"scale"`
 	Adapter *C.struct_llama_lora_adapter `json:"-"`

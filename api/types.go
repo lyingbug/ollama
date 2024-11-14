@@ -85,7 +85,7 @@ type GenerateRequest struct {
 }
 
 type LoraAdapter struct {
-	Id    int     `json:"id"`
+	Name  string  `json:"name"`
 	Scale float32 `json:"scale"`
 }
 
